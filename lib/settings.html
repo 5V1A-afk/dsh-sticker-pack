@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>表情包插件设置 — dsh-sticker-pack</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --card: #ffffff; --text: #14161a; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #2f6df6; --ok: #177245; --bad: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14161a; --card: #1c1f24; --text: #e8eaed; --muted: #9aa1ac;
+            --line: #2c3138; --accent: #6f9dff; --ok: #56c98a; --bad: #ff8a80; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px 64px; background: var(--bg); color: var(--text);
+         font: 15px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  main { max-width: 620px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 18px; margin-bottom: 16px; }
+  .row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  label { font-weight: 600; }
+  .big { font-size: 32px; font-variant-numeric: tabular-nums; font-weight: 700; }
+  input[type=range] { width: 100%; margin: 14px 0 6px; accent-color: var(--accent); }
+  .ticks { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  button { font: inherit; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line);
+           background: transparent; color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  .primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: 9px 20px; font-weight: 600; }
+  .primary:hover { color: #fff; opacity: .9; }
+  .primary:disabled { opacity: .5; cursor: default; }
+  .status { margin-top: 12px; font-size: 13px; min-height: 1.4em; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line);
+        border-radius: 8px; padding: 12px; font-size: 13px; margin: 10px 0 0; }
+  dl { margin: 0; font-size: 13px; } dt { color: var(--muted); float: left; clear: left; width: 96px; }
+  dd { margin: 0 0 4px 96px; word-break: break-all; }
+  a { color: var(--accent); }
+  .foot { color: var(--muted); font-size: 12px; margin-top: 20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>表情包插件设置</h1>
+  <div class="sub">dsh-sticker-pack — 这个页面直接读写插件的运行时设置，改完立刻生效，不用重启 dsh。</div>
+
+  <div class="card">
+    <div class="row">
+      <label for="probability">贴图概率</label>
+      <span class="big" id="readout">—</span>
+    </div>
+    <input type="range" id="probability" min="0" max="100" step="5" value="60" aria-describedby="status">
+    <div class="ticks"><span>0% 从不贴</span><span>50%</span><span>100% 每条都贴</span></div>
+    <div class="chips">
+      <button type="button" data-value="0">0%</button>
+      <button type="button" data-value="30">30%</button>
+      <button type="button" data-value="60">60%</button>
+      <button type="button" data-value="100">100%</button>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button type="button" class="primary" id="save">保存</button>
+      <span class="status" id="status"></span>
+    </div>
+    <pre id="preview"></pre>
+  </div>
+
+  <div class="card">
+    <dl>
+      <dt>当前取值</dt><dd id="source">—</dd>
+      <dt>素材文件夹</dt><dd id="folder">—</dd>
+      <dt>图册</dt><dd id="catalog">—</dd>
+      <dt>设置文件</dt><dd id="file">—</dd>
+    </dl>
+  </div>
+
+  <div class="foot">
+    这是插件自带的最小设置页，地址就是插件自己的路由 <code>/sticker-pack/settings.html</code>；
+    数据接口 <a href="/sticker-pack/settings">/sticker-pack/settings</a>（GET 读、POST 或 <code>?probability=</code> 写）。
+    这些路由不在 dsh 的 <code>/api</code> 认证栅栏内，所以别把这个端口暴露到公网。
+  </div>
+</main>
+<script>
+'use strict'
+const slider = document.getElementById('probability')
+const readout = document.getElementById('readout')
+const status = document.getElementById('status')
+const preview = document.getElementById('preview')
+const source = document.getElementById('source')
+const int = (v) => Math.round(Number(v) * 100)
+
+const ATTACH = '表情包（宿主判定，本轮要贴）：这条回复末尾务必贴一张。'
+const SKIP = '表情包（宿主判定，本轮不贴）：这条回复不要贴表情包，也不要调用 sticker_pick。'
+
+function paint() {
+  const percent = int(slider.value) / 100
+  readout.textContent = `${int(percent)}%`
+  if (percent >= 1) {
+    preview.textContent = `100%：每一轮都固定是这句，没有掷骰。\n\n${ATTACH}`
+    return
+  }
+  if (percent <= 0) {
+    preview.textContent = `0%：每一轮都固定是这句，模型不会去碰素材库。\n\n${SKIP}`
+    return
+  }
+  preview.textContent = `每一轮由插件掷骰（不是模型自己决定）。命中约 ${int(percent)}% 时，模型收到：\n\n`
+    + `${ATTACH}\n\n没命中约 ${100 - int(percent)}% 时，模型收到：\n\n${SKIP}`
+}
+slider.addEventListener('input', paint)
+
+for (const button of document.querySelectorAll('button[data-value]')) {
+  button.addEventListener('click', () => { slider.value = button.dataset.value; paint() })
+}
+
+async function save() {
+  const probability = int(slider.value) / 100
+  const button = document.getElementById('save')
+  button.disabled = true
+  status.className = 'status'
+  status.textContent = '保存中…'
+  let result
+  try {
+    const response = await fetch('/sticker-pack/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ probability }),
+    })
+    result = { status: response.status, body: await response.json() }
+  } catch (err) {
+    // A deployment that only forwards GET to plugin routes: write via the query
+    // fallback instead. Reported, not hidden.
+    try {
+      const response = await fetch(`/sticker-pack/settings?probability=${encodeURIComponent(probability)}`)
+      result = { status: response.status, body: await response.json(), fallback: true }
+    } catch (err2) {
+      status.className = 'status bad'
+      status.textContent = `保存失败：${err2.message}`
+      button.disabled = false
+      return
+    }
+  }
+  button.disabled = false
+  if (result.body && result.body.ok === true) {
+    status.className = 'status ok'
+    status.textContent = `已保存 ${int(result.body.probability)}%（来源：${result.body.source}）${result.fallback ? ' — 走了 GET 回退' : ''}`
+    slider.value = int(result.body.probability)
+    paint()
+    show(result.body)
+  } else {
+    status.className = 'status bad'
+    status.textContent = `保存失败：${(result.body && result.body.error) || result.status}`
+  }
+}
+document.getElementById('save').addEventListener('click', save)
+
+function statusText(status) {
+  if (status === 'ok') return '刚同步'
+  if (status === 'cached') return '用的缓存'
+  if (status === 'stale') return '连不上，沿用上次'
+  if (status === 'error') return '取不到'
+  return status || '未知'
+}
+
+function show(settings) {
+  if (settings === undefined) return
+  source.textContent = `${int(settings.probability)}%（来自 ${settings.source}；默认 ${int(settings.defaultProbability)}%）`
+  file.textContent = settings.file || '—'
+}
+
+async function load() {
+  try {
+    const response = await fetch('/sticker-pack/settings')
+    const settings = await response.json()
+    slider.value = int(settings.probability)
+    paint()
+    show(settings)
+  } catch (err) {
+    status.className = 'status bad'
+    status.textContent = `读不到设置：${err.message}`
+  }
+  try {
+    const response = await fetch('/sticker-pack/cat.json')
+    const catalog = await response.json()
+    const remotes = Array.isArray(catalog.remoteSources) ? catalog.remoteSources : []
+    const local = remotes.length === 0
+      ? '未配置远端素材库（在 settings.json 里写 remotes）'
+      : `素材库来自 ${remotes.length} 个远端源：` + remotes
+        .map((source) => `${source.name || source.url}（${statusText(source.status)}）`)
+        .join('、')
+    document.getElementById('folder').textContent = local
+    const ids = catalog.stickers.map((sticker) => sticker.id).join(' ')
+    document.getElementById('catalog').textContent = `${catalog.stickers.length} 张 — ${ids}`
+  } catch (err) { /* the settings card is the point; the catalog is a bonus */ }
+}
+load()
+</script>
+</body>
+</html>

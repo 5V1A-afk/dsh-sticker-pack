@@ -1,0 +1,18 @@
+# Bundle patch for dsh-sticker-pack.
+#
+# Same insertion shape as the plugins already running in this deployment
+# (dsh-whale-widget): the bundle contributes one entry row, and the host Loader
+# resolves `dsh-sticker-pack` out of the profile's own node_modules.
+#
+# With no config the plugin loads no stickers at all: every sticker comes from a
+# remote `pack.json` (see the README). Configure sources from the profile's own
+# patch layer instead of editing here:
+#
+#   - id: dsh-sticker-pack
+#     config:
+#       remotes:
+#         - https://cdn.jsdelivr.net/gh/you/stickers@main/pack.json
+#       largeFileBytes: 2097152
+- insert:
+    - id: dsh-sticker-pack
+      name: dsh-sticker-pack
