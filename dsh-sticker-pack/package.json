@@ -1,0 +1,33 @@
+{
+  "name": "dsh-sticker-pack",
+  "version": "0.5.0",
+  "private": true,
+  "description": "DSH 表情包插件：订阅远端 pack.json 素材源，把它们变成 agent 可用的表情包，agent 在回复正文里内联贴图；贴图概率由插件自己掷骰。",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "test",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "selftest": "node test/selftest.js",
+    "perf": "node test/perf-probe.js"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  }
+}
