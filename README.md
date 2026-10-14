@@ -11,6 +11,24 @@
 
 配置怎么写见「配置」一节。
 
+## v0.6.2 变更（2026-10-15）
+
+- **熔断时间（等待上限）交给用户。** 之前写死的 15 秒现在由设置决定：DSH 设置面板的「表情包」
+  一节与独立设置页 `/sticker-pack/settings.html` 都多了同一组控件——**5–30 秒滑杆**（默认 15 秒，
+  另有 5/10/15/30 快捷键）+ **一个无上限的秒数输入框**（`min=1`、**没有 `max`**，填 90 就是 90 秒）。
+  值存 `~/.dsh/sticker-pack/settings.json` 的 `deadlineMs`，**保存即生效，不用重启**。
+  理由：这 15 秒是这台机器网络的属性，不是插件的属性——CDN 连不上的那台机器上，等多久合适只有用户知道。
+- **取值规则**：正数即可，**无上限**；`0`/负数/非数字被拒（HTTP 400，文件不动），缺省回落到 15 秒。
+  优先级 `settings.json` > profile 配置的 `deadlineMs` > 默认 `DEFAULT_DEADLINE_MS = 15000`
+  （快照里同时给出 `deadlineSource` 与 `defaultDeadlineMs`）。
+- **`GET` 也能写**：`/sticker-pack/settings?deadlineMs=90000` 与 `?probability=` 同级，可一起送
+  （理由同下：万一插件路由只转发 GET/HEAD，设置页至少还能写）。
+- 自检 **90 条断言全过**（v0.6.1 是 70），新增 20 条覆盖等待上限：默认值、字符串入参、
+  **超过滑杆范围不被夹紧**（120000 ms 原样保留）、0/负数回落、GET 写、POST 写、非法值 400 且文件不动、
+  设置页两处控件、客户端面板两处控件——其中面板那条断言的正是**数字框没有 `max`**，
+  因为「无上限」本身就是需求。
+- 仍未真机验证：面板控件只在桩 React 下渲染断言过，没有在真实 GUI 里点过；要等重启 dsh 后才算数。
+
 ## v0.6.1 变更（2026-10-15）
 
 - **微信会话改成发文件，并且不再发动图。** v0.6.0 的做法是「让模型用 `send_to_wechat` 把图发出去」，
@@ -42,12 +60,13 @@
   `send_to_wechat` 把这个文件发出去」。桌面会话的文案一个字没变。
 - **GIF 出现得更勤。** `gifBias`（默认 2）：同分候选里动图的权重是静图的 2 倍。只影响
   同分随机那一层，指名 `id` 或 `tag` 时照旧。
-- 工具入口的硬上限 **9 秒 → 15 秒**（`TOOL_DEADLINE_MS`，用户给的预算）。
+- 工具入口的硬上限 **9 秒 → 15 秒**（当时叫 `TOOL_DEADLINE_MS`，现名 `DEFAULT_DEADLINE_MS`；
+  v0.6.2 起这个数字只是**默认值**，真正的上限由设置里的「等待上限」决定）。
 
 ## v0.5.1 变更（2026-10-15）
 
-- **网络再慢也拖不住回复。** 工具入口给整次远端同步加了 **9 秒硬上限**（`TOOL_DEADLINE_MS`，v0.6.0 起放宽到 15 秒，
-  `lib/index.js`）：超时就用本机已有的镜像回答，并把原因写进 `notice`，而不是继续等。
+- **网络再慢也拖不住回复。** 工具入口给整次远端同步加了 **9 秒硬上限**（当时叫 `TOOL_DEADLINE_MS`，v0.6.0 起放宽到 15 秒，
+  v0.6.2 起改为用户可在设置里调的「等待上限」，默认仍是 15 秒，`lib/index.js`）：超时就用本机已有的镜像回答，并把原因写进 `notice`，而不是继续等。
 - **失败熔断。** 某个源拉取失败后 **10 分钟内不再重试**（拉清单时的 `fresh` 强制刷新可绕过）；
   期间有镜像就沿用镜像。以前每一轮回复都会从头把超时和重试再付一遍。
 - 默认单源超时 **15 秒 → 6 秒**，重试 **3 次 → 2 次**（`lib/remote.js` 的 `DEFAULT_TIMEOUT_MS`
@@ -242,8 +261,10 @@
 有两种入口，改的是同一个 `settings.json`，任选一种：
 
 **① DSH 设置面板里的原生一栏（首选）** —— 插件带了一个客户端半边 `client.js`，在宿主的
-`settings.section` slot 里注册一节「表情包」，与内置设置项并列。滑块 + 0/30/60/100% 快捷键，
-松手即存，并显示图册张数、几个远端源可用、几张图是「用到才下载」。
+`settings.section` slot 里注册一节「表情包」，与内置设置项并列。两组控件：**贴图概率**
+（滑块 + 0/30/60/100% 快捷键，松手即存）和**等待上限**（5–30 秒滑块 + 5/10/15/30 快捷键，
+外加一个无上限的自定义秒数输入框，回车或失焦才写盘）。下面显示图册张数、几个远端源可用、
+几张图是「用到才下载」。
 
 **② 插件自带的独立网页（回退）** —— 地址就是它自己的路由（端口跟 dsh 的 Web GUI 一致）：
 
@@ -251,19 +272,20 @@
 http://127.0.0.1:19387/sticker-pack/settings.html
 ```
 
-页面上只有一件事：**贴图概率**（0–100%，默认 60%）。滑块 + 快捷按钮，保存后立刻生效，并把
-新的措辞预览出来——命中的那轮发什么、轮空的那轮发什么，以及 0% / 100% 各自恒定成哪一句。
-下面那张卡片显示当前取值的来源、远端源状态、图册里的 id 列表和设置文件路径。
+页面上现在是两件事：**贴图概率**（0–100%，默认 60%）与**等待上限**（5–30 秒滑块 + 无上限的
+自定义秒数输入框，v0.6.2 起）。滑块 + 快捷按钮，保存后立刻生效，并把新的措辞预览出来——命中的
+那轮发什么、轮空的那轮发什么，以及 0% / 100% 各自恒定成哪一句。下面那张卡片显示当前取值
+（概率与等待上限各自的来源）、远端源状态、图册里的 id 列表和设置文件路径。
 
 | | |
 |---|---|
-| 读 | `GET /sticker-pack/settings` → `{ok, probability, source, defaultProbability, file}` |
-| 写 | `POST /sticker-pack/settings`，body `{"probability":0.85}`；或 `GET /sticker-pack/settings?probability=0.85` |
+| 读 | `GET /sticker-pack/settings` → `{ok, probability, source, defaultProbability, deadlineMs, deadlineSource, defaultDeadlineMs, file}` |
+| 写 | `POST /sticker-pack/settings`，body `{"probability":0.85}` 或 `{"deadlineMs":90000}`（可同时送）；或 `GET /sticker-pack/settings?probability=0.85&deadlineMs=90000` |
 | 存 | `~/.dsh/sticker-pack/settings.json` |
-| 优先级 | `settings.json` > profile 的 `cordis.yml`/`cordis.patch.yml` 配置 > 默认 0.6 |
+| 优先级 | `settings.json` > profile 的 `cordis.yml`/`cordis.patch.yml` 配置 > 默认（概率 0.6 / 等待上限 15000 ms） |
 
-`GET ?probability=` 这条回退路径是故意的：本进程看不到宿主的路由表，万一插件路由只转发
-GET/HEAD（`/api/*` 就是），设置页至少还能写。
+`GET ?probability=` 与 `GET ?deadlineMs=` 这两条回退路径是故意的：本进程看不到宿主的路由表，
+万一插件路由只转发 GET/HEAD（`/api/*` 就是），设置页至少还能写。
 
 要留意两点，都不算 bug 但得知道：
 
@@ -289,7 +311,7 @@ DSH 的客户端插件**不是 ES module，是一个脚本**：加载时调
 否则客户端会报 `require(...) missed the module table`。`apply` 里 `inject` **必须**声明用到的服务，
 本插件是 `['slots']`——漏了会让这一行在 Cordis 里提前激活、`ctx.slots` 取不到、整条 entry 变 `failed`。
 
-所以这个客户端半边是**手写产物**（6374 B，无 JSX、无 sourcemap、无打包器），改完文件即加载新内容；
+所以这个客户端半边是**手写产物**（12071 B，无 JSX、无 sourcemap、无打包器），改完文件即加载新内容；
 本机也确实没有 esbuild/rollup/tsc（验证过：PATH 上一个都没有）。代价是这里没有 JSX/TS 的静态检查，
 所以 `test/selftest.js` 会在一个假 `window` 里把 `client.js` 真跑一遍：
 注册次数、id 是否等于包名、`inject` 是否含 `slots`、只 require 了 `react`、slot 规格是否合法、
@@ -354,6 +376,7 @@ DSH 的客户端插件**不是 ES module，是一个脚本**：加载时调
     recentWindow: 3                            # 最近用过的几张排到后面，0 = 纯随机
     scanTtlMs: 1000                            # 目录扫描复用窗口，0 = 每次重扫
     probability: 0.6                           # 贴图概率，设置页可覆盖（0.6 = 60%）
+    deadlineMs: 15000                          # 等待上限（v0.6.2），设置页可覆盖；正数即可，无上限
     prompt: true                               # false = 不注册那段贴图策略
     httpBaseUrl: http://127.0.0.1:19387        # 可选，见下
 ```
@@ -364,6 +387,8 @@ DSH 的客户端插件**不是 ES module，是一个脚本**：加载时调
 
 `probability` 写在配置里就是「出厂值」：一旦设置页写过一次 `settings.json`，文件里的值
 优先于配置，配置里的值只在文件里没有这个键时生效（删掉 `settings.json` 即回到配置值）。
+`deadlineMs`（等待上限，v0.6.2）走同一条规则，所以「配置里写 20000、设置里改成 8 秒」
+的结果是 8 秒；想让配置重新说了算，删掉 `settings.json` 里那一行即可。
 
 ### `linkStyle`：两种出图形式，各有取舍
 
@@ -483,7 +508,8 @@ node test\perf-probe.js "C:\some\folder"
 `selftest.js` 先在一个临时目录里**搭一份远端源的镜像**（`pack.json` + `images.json` +
 `source.json` + 几张 1×1 的图），再让插件只通过 `remotes` 去读它——所以自检不碰网络、
 也不碰你机器上任何文件夹。它会打印：注册到的工具与路由、prompt 段落原文、扫描到的图册、
-几张取图的 markdown、空目录/坏清单/未知 id 的降级行为、设置接口的读/写/越界拒绝、五条 HTTP
+几张取图的 markdown、空目录/坏清单/未知 id 的降级行为、设置接口的读/写/越界拒绝（概率与等待上限
+两套值都跑）、五条 HTTP
 路由的状态码与 ETag/304 复用；另外**真起一个本地 HTTP 服务**走完「同步清单 → 落成镜像目录 →
 懒下载图片 → 变回可用 → 关掉服务后沿用缓存」整条链路，最后把 `client.js` 放进假 `window`
 里真跑一遍（见「客户端半边」）。
@@ -581,7 +607,7 @@ dsh-base → dsh-web-app → dsh-sticker-pack），所以这不是探测环境�
   无认证的同源页面——所以别把 webServer 绑到 `0.0.0.0`，也别把端口映射到公网。
 - **动图偏大**：`pen` 13.4 MB、`bowl` 4.4 MB，加载慢。`sticker_pick` 会对超过
   `largeFileBytes` 的图在输出里提醒。
-- **宿主半区 + 一个很小的客户端半区**：`lib/index.js` 是宿主插件；`client.js`（6374 B，手写、
+- **宿主半区 + 一个很小的客户端半区**：`lib/index.js` 是宿主插件；`client.js`（12071 B，手写、
   无构建）只在 DSH 设置面板里加一节「表情包」。客户端**无法替换 markdown 图片渲染器**
   （`MarkdownText` 没有 components/renderers 钩子），所以“喂什么 URL”仍是唯一的控制点。
   已核对 `@deepseek-ai/dsh-client-ui-primitives` / `-chat` 的导出表：`MarkdownText` 是导出的，
@@ -592,6 +618,10 @@ dsh-base → dsh-web-app → dsh-sticker-pack），所以这不是探测环境�
 - **`recentWindow` 只影响顺序**：用过的图排在后面（打分相同才轮到它），不是禁用；
   真的不想重复就显式传 `avoid`。
 - **运行时验证状况**（分清楚哪些是真跑过、哪些只是离线自检）：
+  - v0.6.2（等待上限交给用户）：自检 **90 条断言全过**，新增 20 条覆盖等待上限（默认值、字符串入参、
+    超过滑杆范围不被夹紧、0/负数回落、GET 写、POST 写、非法值 400 且文件不动、设置页两处控件、
+    客户端面板两处控件）。**尚未真机验证**：面板与设置页的控件都只在离线自检里断言过，
+    没有在真实 GUI 里点过；`GET ?deadlineMs=` 这条回退路径也还没有被真实宿主路由转发过一次。
   - v0.6.1（微信改发文件 / 排除动图）：自检 **70 条断言全过**，新增 2 条覆盖「动图识别」与
     「`.wechat` 副本的文件名让通道按文件发送」。**2026-10-15 已在真机验证**：微信会话里贴图能
     正常收到，说明「按文件上传」这条路成立。
@@ -622,7 +652,8 @@ dsh-base → dsh-web-app → dsh-sticker-pack），所以这不是探测环境�
     `_probe` profile 没有 `node_modules`，也没有 `dsh` 命令行入口），所以这一条**无法按需重跑**。
   - v0.3.0 新增的 `/sticker-pack/settings`、`settings.html`、`/sticker-pack/` 与那段 system
     prompt 段落：**只在离线自检里验证过**（`test/selftest.js` 32 条断言全过，含 GET 读、GET
-    `?probability=` 写、POST 写、非法值 400、超 16 KiB 413、页面 7689 B 完整送达、段落文本跟着概率变）。
+    `?probability=` 写、POST 写、非法值 400、超 16 KiB 413、页面 7689 B 完整送达、段落文本跟着概率变；
+    那时的页面大小已作废——见 v0.6.2 那条的 90 条断言）。
     真宿主里的表现要等下一次启动 dsh 才能在 `boot.log` 里看到。
   - 客户端半边 `client.js`：**没在真浏览器里看过**。离线自检把它放进假 `window`、用桩 React
     跑通了「注册 → apply → 渲染出一棵元素树」，但「DSH 设置里真的多出一节、点了真的存上」

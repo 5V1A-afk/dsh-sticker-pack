@@ -9,7 +9,8 @@
  * `exports["./client"]` to it, then serves it from `/plugins/<pkg>/client.js`.
  *
  * It contributes one entry to the host's `settings.section` slot, so the sticker
- * probability is editable inside DSH's own Settings — no separate page needed.
+ * probability and the wait budget (5..30 s slider plus an uncapped seconds
+ * field) are editable inside DSH's own Settings — no separate page needed.
  * The plugin's HTTP page (`/sticker-pack/settings.html`) stays as the fallback
  * and as the thing that works without the GUI.
  *
@@ -27,6 +28,18 @@ window.__ModuleLoader__.load({
     const ENDPOINT = '/sticker-pack/settings'
     const inject = ['slots']
     const percent = (value) => Math.round(Number(value) * 100)
+
+    // The wait budget — how long a reply may block on an unreachable remote
+    // source. The slider covers 5..30 s; the number field has no upper clamp,
+    // because the right number is a property of this machine's network, not of
+    // the plugin. Both write `deadlineMs` into the same settings.json.
+    const SLIDER_MIN_SECONDS = 5
+    const SLIDER_MAX_SECONDS = 30
+    const secondsOf = (ms) => Math.round(Number(ms) / 100) / 10
+    const msOfSeconds = (value) => Math.round(Number(value) * 1000)
+    const insideSlider = (value) => value >= SLIDER_MIN_SECONDS && value <= SLIDER_MAX_SECONDS
+    const sliderSeconds = (value) =>
+      String(Math.min(SLIDER_MAX_SECONDS, Math.max(SLIDER_MIN_SECONDS, Math.round(value))))
 
     async function call(url, options) {
       const response = await fetch(url, options)
@@ -50,6 +63,8 @@ window.__ModuleLoader__.load({
         fontSize: '12px',
       },
       note: { marginTop: '8px', fontSize: '12px', opacity: 0.75, lineHeight: 1.6 },
+      hint: { fontSize: '12px', opacity: 0.75, lineHeight: 1.6 },
+      number: { width: '88px', padding: '2px 6px' },
       link: { color: 'inherit' },
     }
 
@@ -76,6 +91,9 @@ window.__ModuleLoader__.load({
       const [pack, setPack] = React.useState(null)
       const [draft, setDraft] = React.useState(0.6)
       const [note, setNote] = React.useState('读取中…')
+      const [deadline, setDeadline] = React.useState(15000)
+      const [deadlineText, setDeadlineText] = React.useState('')
+      const [deadlineNote, setDeadlineNote] = React.useState('等待上限：默认 15 秒')
 
       const refresh = React.useCallback(async () => {
         try {
@@ -83,6 +101,9 @@ window.__ModuleLoader__.load({
           setSnapshot(body)
           setDraft(body.probability)
           setNote(`当前 ${percent(body.probability)}%（来源：${body.source}）`)
+          setDeadline(body.deadlineMs)
+          setDeadlineText(insideSlider(secondsOf(body.deadlineMs)) ? '' : String(secondsOf(body.deadlineMs)))
+          setDeadlineNote(`当前 ${secondsOf(body.deadlineMs)} 秒（来源：${body.deadlineSource}）`)
         } catch (error) {
           setNote(`读不到设置：${error.message}`)
         }
@@ -120,6 +141,44 @@ window.__ModuleLoader__.load({
         save(value)
       }
 
+      const saveDeadline = async (value) => {
+        setDeadlineNote('保存中…')
+        try {
+          const body = await call(ENDPOINT, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ deadlineMs: msOfSeconds(value) }),
+          })
+          setDeadline(body.deadlineMs)
+          setDeadlineText(insideSlider(secondsOf(body.deadlineMs)) ? '' : String(secondsOf(body.deadlineMs)))
+          setDeadlineNote(`已保存 ${secondsOf(body.deadlineMs)} 秒 — 下一条回复就按它来，不用重启`)
+        } catch (error) {
+          setDeadlineNote(`保存失败：${error.message}`)
+        }
+      }
+
+      const pickDeadline = (value) => {
+        setDeadline(msOfSeconds(value))
+        setDeadlineText(insideSlider(value) ? '' : String(value))
+        saveDeadline(value)
+      }
+
+      // The free field only commits on blur or Enter, so a half-typed number
+      // never gets written to disk.
+      const commitDeadlineText = () => {
+        const raw = String(deadlineText).trim()
+        if (raw === '') {
+          setDeadlineText(insideSlider(secondsOf(deadline)) ? '' : String(secondsOf(deadline)))
+          return
+        }
+        const value = Number(raw)
+        if (!Number.isFinite(value) || value <= 0) {
+          setDeadlineNote('秒数要填一个大于 0 的数字')
+          return
+        }
+        saveDeadline(value)
+      }
+
       return h(
         'div',
         { style: styles.wrap },
@@ -147,6 +206,58 @@ window.__ModuleLoader__.load({
           ),
         ),
         h('div', { style: styles.note }, note),
+        h(
+          'div',
+          { style: { ...styles.row, marginTop: '14px' } },
+          h('span', { style: styles.value }, '等待上限'),
+          h('input', {
+            type: 'range',
+            min: String(SLIDER_MIN_SECONDS),
+            max: String(SLIDER_MAX_SECONDS),
+            step: '1',
+            value: sliderSeconds(secondsOf(deadline)),
+            style: styles.slider,
+            onChange: (event) => {
+              setDeadline(msOfSeconds(Number(event.target.value)))
+              setDeadlineText('')
+            },
+            onMouseUp: (event) => saveDeadline(Number(event.target.value)),
+            onKeyUp: (event) => saveDeadline(Number(event.target.value)),
+          }),
+          h('span', { style: styles.value }, `${secondsOf(deadline)} 秒`),
+          ...[5, 10, 15, 30].map((value) =>
+            h(
+              'button',
+              { key: String(value), type: 'button', style: styles.button, onClick: () => pickDeadline(value) },
+              value === 15 ? '默认' : `${value} 秒`,
+            ),
+          ),
+        ),
+        h(
+          'div',
+          { style: styles.row },
+          h('span', { style: styles.value }, '自定义'),
+          h('input', {
+            type: 'number',
+            min: '1',
+            step: '1',
+            value: deadlineText,
+            placeholder: '例如 90',
+            style: styles.number,
+            onChange: (event) => setDeadlineText(event.target.value),
+            onBlur: commitDeadlineText,
+            onKeyDown: (event) => {
+              if (event.key === 'Enter') commitDeadlineText()
+            },
+          }),
+          h('span', { style: styles.hint }, '秒，无上限（填完按回车或点别处才保存）'),
+        ),
+        h('div', { style: styles.note }, deadlineNote),
+        h(
+          'div',
+          { style: styles.hint },
+          '等待上限＝某个远端素材库连不上时，这条回复最多等它多久；设得越大，连不上的那轮就等得越久。',
+        ),
         h(
           'div',
           { style: styles.note },

@@ -157,6 +157,19 @@ check('default probability is 0.6', plugin.probabilityOf({}) === 0.6, String(plu
 check('profile config wins over the default', plugin.probabilityOf({ probability: 0.25 }) === 0.25)
 check('out-of-range config is clamped', plugin.probabilityOf({ probability: 9 }) === 1)
 
+// The wait budget is the user's number, not the plugin's. The slider covers
+// 5..30 s because that is the band worth nudging by hand; anything above it is
+// legal and must survive untouched, since the right value is a property of this
+// machine's network rather than of the plugin.
+check('default wait budget is 15 s', plugin.deadlineOf({}) === 15000, String(plugin.deadlineOf({})))
+check('profile config sets the wait budget', plugin.deadlineOf({ deadlineMs: 4000 }) === 4000)
+check('a string (as it arrives from a URL) is accepted', plugin.deadlineOf({ deadlineMs: '4000' }) === 4000)
+check('a budget past the slider is honoured, not clamped',
+  plugin.deadlineOf({ deadlineMs: 120000 }) === 120000, String(plugin.deadlineOf({ deadlineMs: 120000 })))
+check('zero and negatives fall back to the default',
+  plugin.deadlineOf({ deadlineMs: 0 }) === 15000 && plugin.deadlineOf({ deadlineMs: -5 }) === 15000,
+  `${plugin.deadlineOf({ deadlineMs: 0 })},${plugin.deadlineOf({ deadlineMs: -5 })}`)
+
 const settingsRoute = routes.find((route) => route.path === '/sticker-pack/settings')
 const pageRoute = routes.find((route) => route.path === '/sticker-pack/settings.html')
 let lastStatus = 0
@@ -185,12 +198,34 @@ const rejected = callRoute(settingsRoute, 'GET', '/sticker-pack/settings?probabi
 check('GET ?probability=abc rejected', rejected.startsWith('400 '), rejected)
 const stillOnDisk = JSON.parse(fs.readFileSync(joinPath(stateHome, 'settings.json'), 'utf8'))
 check('settings.json unchanged after the rejection', stillOnDisk.probability === 0.85)
+const wroteDeadline = callRoute(settingsRoute, 'GET', '/sticker-pack/settings?deadlineMs=90000')
+check('GET ?deadlineMs=90000 writes',
+  wroteDeadline.startsWith('200 ') && wroteDeadline.includes('"deadlineMs":90000'), wroteDeadline)
+const deadlineOnDisk = JSON.parse(fs.readFileSync(joinPath(stateHome, 'settings.json'), 'utf8'))
+check('settings.json persisted the wait budget', deadlineOnDisk.deadlineMs === 90000, JSON.stringify(deadlineOnDisk))
+check('the write left the probability alone', deadlineOnDisk.probability === 0.85, JSON.stringify(deadlineOnDisk))
+check('the snapshot names where the number came from',
+  wroteDeadline.includes('"deadlineSource":"settings.json"'), wroteDeadline)
+const badDeadline = callRoute(settingsRoute, 'GET', '/sticker-pack/settings?deadlineMs=abc')
+check('GET ?deadlineMs=abc rejected',
+  badDeadline.startsWith('400 ') && badDeadline.includes('positive number'), badDeadline)
+const afterBadDeadline = JSON.parse(fs.readFileSync(joinPath(stateHome, 'settings.json'), 'utf8'))
+check('a rejected wait budget leaves the file alone', afterBadDeadline.deadlineMs === 90000,
+  JSON.stringify(afterBadDeadline))
+// Put it back before the sections that time real fetches: 90 s is not their budget.
+plugin.applySettingsPatch({}, { deadlineMs: 15000 })
+check('the wait budget is editable again', plugin.deadlineOf({}) === 15000, String(plugin.deadlineOf({})))
 const page = callRoute(pageRoute, 'GET', '/sticker-pack/settings.html')
 const onDiskBytes = fs.statSync(joinPath(__dirname, '..', 'lib', 'settings.html')).size
 check('settings page served in full',
   page.startsWith('200 ') && page.includes('<title>表情包插件设置')
     && Buffer.byteLength(page.slice(4)) === onDiskBytes,
   `${Buffer.byteLength(page.slice(4))} bytes served, ${onDiskBytes} on disk`)
+const freeFieldTag = /<input[^>]*id="deadlineFree"[^>]*>/.exec(page)
+check('the page carries the 5–30 s slider', page.includes('id="deadline" min="5" max="30"'), '')
+check('the page carries an uncapped seconds field',
+  freeFieldTag !== null && !/\bmax=/.test(freeFieldTag[0]),
+  freeFieldTag === null ? 'no field' : freeFieldTag[0])
 
 const GIF_1X1 = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
 const PNG_1X1 = Buffer.from(
@@ -469,6 +504,19 @@ async function main() {
     `${tooBig.status} ${tooBig.body}`)
   const afterBig = JSON.parse(fs.readFileSync(joinPath(stateHome, 'settings.json'), 'utf8'))
   check('oversized body never reached the file', afterBig.probability === 0.3, JSON.stringify(afterBig))
+  const postedDeadline = await postRoute(settingsRoute, JSON.stringify({ deadlineMs: 45000 }))
+  check('POST /settings writes the wait budget',
+    postedDeadline.status === 200 && postedDeadline.body.includes('"deadlineMs":45000'),
+    `${postedDeadline.status} ${postedDeadline.body}`)
+  const postedBadDeadline = await postRoute(settingsRoute, JSON.stringify({ deadlineMs: -1 }))
+  check('POST with a non-positive wait budget is 400',
+    postedBadDeadline.status === 400 && postedBadDeadline.body.includes('positive number'),
+    `${postedBadDeadline.status} ${postedBadDeadline.body}`)
+  const deadlineAfterPost = JSON.parse(fs.readFileSync(joinPath(stateHome, 'settings.json'), 'utf8'))
+  check('the rejected POST did not touch the wait budget', deadlineAfterPost.deadlineMs === 45000,
+    JSON.stringify(deadlineAfterPost))
+  // Back to the default for the timing sections that follow.
+  await postRoute(settingsRoute, JSON.stringify({ deadlineMs: 15000 }))
 
   // ---- the host's coin, not the model's -------------------------------------
   // The point of the host-side decision: the section states the outcome instead
@@ -770,6 +818,27 @@ async function main() {
   check('panel renders under a stub react', tree !== undefined && tree !== null && tree.type === 'div',
     tree === undefined || tree === null ? 'nothing rendered' : String(tree.type))
   check('panel starts on the default 60%', JSON.stringify(tree).includes('"value":"60"'), '')
+  // Walk the stub element tree for the two wait-budget controls: a 5..30 s
+  // slider, and a seconds field with no `max` — that missing clamp is the whole
+  // point of the second control, so assert its absence rather than its wording.
+  const nodes = []
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object') return
+    if (Array.isArray(node)) { node.forEach(walk); return }
+    nodes.push(node)
+    if (Array.isArray(node.children)) node.children.forEach(walk)
+  }
+  walk(tree)
+  const deadlineSlider = nodes.find((node) =>
+    node.type === 'input' && node.props.type === 'range' && node.props.min === '5' && node.props.max === '30')
+  const freeField = nodes.find((node) => node.type === 'input' && node.props.type === 'number')
+  check('panel offers the 5–30 s slider', deadlineSlider !== undefined)
+  check('panel starts the slider on the default 15 s',
+    deadlineSlider !== undefined && deadlineSlider.props.value === '15',
+    deadlineSlider === undefined ? 'no slider' : String(deadlineSlider.props.value))
+  check('panel offers a seconds field with no upper clamp',
+    freeField !== undefined && freeField.props.max === undefined,
+    freeField === undefined ? 'no field' : JSON.stringify(freeField.props))
 
   if (failures.length > 0) {
     console.error(`\n${failures.length} check(s) FAILED: ${failures.join('; ')}`)

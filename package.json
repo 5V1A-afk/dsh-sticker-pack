@@ -1,7 +1,7 @@
 {
   "name": "dsh-sticker-pack",
-  "version": "0.6.1",
-  "description": "DSH 表情包插件：订阅远端 pack.json 素材源，把它们变成 agent 可用的表情包，agent 在回复正文里内联贴图；贴图概率由插件自己掷骰，出图在 HTTP 与本地路径之间自动择优，微信会话改发静态图文件。",
+  "version": "0.6.2",
+  "description": "DSH 表情包插件：订阅远端 pack.json 素材源，把它们变成 agent 可用的表情包，agent 在回复正文里内联贴图；贴图概率由插件自己掷骰，出图在 HTTP 与本地路径之间自动择优，微信会话改发静态图文件，熔断等待上限由用户在设置里调（5–30 秒滑杆或任意秒数）。",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/5V1A-afk/dsh-sticker-pack.git"

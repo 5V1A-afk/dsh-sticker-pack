@@ -35,6 +35,9 @@
   .primary:hover { color: #fff; opacity: .9; }
   .primary:disabled { opacity: .5; cursor: default; }
   .status { margin-top: 12px; font-size: 13px; min-height: 1.4em; }
+  .note { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  input[type=number] { padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line);
+                       background: transparent; color: var(--text); font: inherit; width: 120px; }
   .ok { color: var(--ok); } .bad { color: var(--bad); }
   pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line);
         border-radius: 8px; padding: 12px; font-size: 13px; margin: 10px 0 0; }
@@ -70,6 +73,27 @@
   </div>
 
   <div class="card">
+    <div class="row">
+      <label for="deadline">等待上限</label>
+      <span class="big" id="deadlineReadout">—</span>
+    </div>
+    <input type="range" id="deadline" min="5" max="30" step="1" value="15" aria-describedby="deadlineNote">
+    <div class="ticks"><span>5 秒就放弃</span><span>15 秒</span><span>30 秒</span></div>
+    <div class="chips">
+      <button type="button" class="deadline-chip" data-value="5">5s</button>
+      <button type="button" class="deadline-chip" data-value="10">10s</button>
+      <button type="button" class="deadline-chip" data-value="15">15s</button>
+      <button type="button" class="deadline-chip" data-value="30">30s</button>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <label for="deadlineFree" style="font-weight:400;font-size:13px">自定义（秒，无上限）</label>
+      <input type="number" id="deadlineFree" min="1" step="1" placeholder="例如 90">
+    </div>
+    <div class="status" id="deadlineStatus"></div>
+    <div class="note" id="deadlineNote"></div>
+  </div>
+
+  <div class="card">
     <dl>
       <dt>当前取值</dt><dd id="source">—</dd>
       <dt>素材文件夹</dt><dd id="folder">—</dd>
@@ -93,6 +117,15 @@ const preview = document.getElementById('preview')
 const source = document.getElementById('source')
 const int = (v) => Math.round(Number(v) * 100)
 
+const deadlineSlider = document.getElementById('deadline')
+const deadlineFree = document.getElementById('deadlineFree')
+const deadlineReadout = document.getElementById('deadlineReadout')
+const deadlineNote = document.getElementById('deadlineNote')
+const deadlineStatus = document.getElementById('deadlineStatus')
+const DEFAULT_DEADLINE_MS = 15000
+const secondsOf = (ms) => Math.round(Number(ms) / 100) / 10
+const msOf = (seconds) => Math.round(Number(seconds) * 1000)
+
 const ATTACH = '表情包（宿主判定，本轮要贴）：这条回复末尾务必贴一张。'
 const SKIP = '表情包（宿主判定，本轮不贴）：这条回复不要贴表情包，也不要调用 sticker_pick。'
 
@@ -114,6 +147,78 @@ slider.addEventListener('input', paint)
 
 for (const button of document.querySelectorAll('button[data-value]')) {
   button.addEventListener('click', () => { slider.value = button.dataset.value; paint() })
+}
+
+/**
+ * The wait budget: the slider covers the ordinary 5–30 s band, the number field
+ * covers everything else and is deliberately uncapped. Whichever the user
+ * touches wins; the other follows as far as it can.
+ */
+function paintDeadline() {
+  const seconds = Number(deadlineSlider.value)
+  const free = deadlineFree.value.trim()
+  const shown = free === '' ? seconds : Number(free)
+  deadlineReadout.textContent = Number.isFinite(shown) && shown > 0 ? `${shown} 秒` : '—'
+  deadlineNote.textContent = '超过这个时间还没等到远端，本轮就改用本地镜像回答，并说明原因。'
+    + '设得越大插件越有耐心，但远端连不上时你等得也越久；默认 15 秒。'
+}
+
+function setDeadline(ms) {
+  const seconds = secondsOf(ms)
+  deadlineSlider.value = String(Math.min(30, Math.max(5, Math.round(seconds))))
+  deadlineFree.value = seconds < 5 || seconds > 30 ? String(seconds) : ''
+  paintDeadline()
+}
+
+async function saveDeadline(seconds) {
+  deadlineStatus.className = 'status'
+  deadlineStatus.textContent = '保存中…'
+  try {
+    const response = await fetch('/sticker-pack/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deadlineMs: msOf(seconds) }),
+    })
+    const body = await response.json()
+    if (body && body.ok === true) {
+      deadlineStatus.className = 'status ok'
+      deadlineStatus.textContent = `已保存 ${secondsOf(body.deadlineMs)} 秒（来源：${body.deadlineSource}）`
+      setDeadline(body.deadlineMs)
+    } else {
+      deadlineStatus.className = 'status bad'
+      deadlineStatus.textContent = `保存失败：${(body && body.error) || response.status}`
+    }
+  } catch (err) {
+    deadlineStatus.className = 'status bad'
+    deadlineStatus.textContent = `保存失败：${err.message}`
+  }
+}
+
+deadlineSlider.addEventListener('input', () => {
+  deadlineFree.value = ''
+  paintDeadline()
+  saveDeadline(Number(deadlineSlider.value))
+})
+
+deadlineFree.addEventListener('change', () => {
+  const seconds = Number(deadlineFree.value)
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    deadlineStatus.className = 'status bad'
+    deadlineStatus.textContent = '自定义值要是大于 0 的数字（单位：秒）'
+    return
+  }
+  deadlineSlider.value = String(Math.min(30, Math.max(5, Math.round(seconds))))
+  paintDeadline()
+  saveDeadline(seconds)
+})
+
+for (const button of document.querySelectorAll('button.deadline-chip')) {
+  button.addEventListener('click', () => {
+    deadlineFree.value = ''
+    deadlineSlider.value = button.dataset.value
+    paintDeadline()
+    saveDeadline(Number(button.dataset.value))
+  })
 }
 
 async function save() {
