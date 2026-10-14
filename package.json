@@ -1,6 +1,6 @@
 {
   "name": "dsh-sticker-pack",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "DSH 表情包插件：订阅远端 pack.json 素材源，把它们变成 agent 可用的表情包，agent 在回复正文里内联贴图；贴图概率由插件自己掷骰。",
   "repository": {
     "type": "git",

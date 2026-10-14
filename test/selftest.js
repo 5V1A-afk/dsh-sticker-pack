@@ -650,6 +650,14 @@ async function main() {
   check('a source that goes away keeps its last mirror',
     staleSync[0].status === 'stale' && staleSync[0].count === 1,
     JSON.stringify({ status: staleSync[0].status, error: staleSync[0].error }))
+  // `fresh: true` above deliberately bypasses the cooldown, so this call is the
+  // first one that can observe it: a source that just failed must not be dialled
+  // again. The wording is the observable difference — without the cooldown this
+  // comes back as a fresh "fetch failed" after paying the timeout again.
+  const cooled = await remoteLib.syncRemotes(netSources, { cacheDirectory: cacheFolder, ttlMs: 0 })
+  check('a source that just failed is not retried during the cooldown',
+    cooled[0].status === 'stale' && cooled[0].count === 1 && /冷却/.test(String(cooled[0].error)),
+    JSON.stringify({ status: cooled[0].status, error: cooled[0].error }))
 
   // ---- the client half ------------------------------------------------------
   // It is a script, not a module: it calls `window.__ModuleLoader__.load(...)` at
