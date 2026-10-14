@@ -659,6 +659,59 @@ async function main() {
     cooled[0].status === 'stale' && cooled[0].count === 1 && /冷却/.test(String(cooled[0].error)),
     JSON.stringify({ status: cooled[0].status, error: cooled[0].error }))
 
+  // ---- v0.6.0: link style, GIF bias, WeChat routing -------------------------
+
+  check('a WeChat session is told to send the file, not paste the markdown', (() => {
+    const text = plugin.promptText(0.5, true, 'wechat')
+    return text.includes('send_to_wechat') && !text.includes('放进回复正文')
+  })())
+  check('the desktop wording is unchanged', plugin.promptText(0.5, true).includes('放进回复正文'))
+
+  const channel = { workspace: 'C:\\ws\\dsh_wechat' }
+  const channelCtx = { get: (key) => (key === 'wechatChannel' ? channel : undefined) }
+  check('a session inside the WeChat workspace is recognised',
+    plugin.isWechatSession(channelCtx, { session: { cwd: 'C:/ws/dsh_wechat/' } }) === true)
+  check('an ordinary session is not treated as WeChat',
+    plugin.isWechatSession(channelCtx, { session: { cwd: 'C:/work/project' } }) === false)
+  check('a profile without the channel never looks like WeChat',
+    plugin.isWechatSession({ get: () => undefined }, { session: { cwd: 'C:/ws/dsh_wechat/' } }) === false)
+
+  check('animations are recognised, so the WeChat pool can leave them out',
+    plugin.isAnimated({ extension: '.gif' }) === true
+    && plugin.isAnimated({ extension: '.GIF' }) === true
+    && plugin.isAnimated({ file: 'a.gif' }) === true
+    && plugin.isAnimated({ extension: '.jpg' }) === false
+    && plugin.isAnimated({ file: 'a.webp' }) === false
+    && plugin.isAnimated(null) === false)
+
+  check('a WeChat-bound copy is named so the channel sends it as a file', (() => {
+    const source = pack.stickers.find((item) => !plugin.isAnimated(item))
+    if (source === undefined) return false
+    const staged = plugin.wechatFileCopy({ id: 'wechatprobe', path: source.path, extension: source.extension, bytes: source.bytes })
+    if (typeof staged !== 'string' || !staged.endsWith('.wechat')) return false
+    // The channel classifies by the trailing extension alone, so the staged name
+    // must not end in an image suffix even though it carries the real one in front.
+    if (/\.(png|jpe?g|gif|webp|bmp|heic|heif)$/iu.test(staged)) return false
+    return fs.readFileSync(staged).length === source.bytes
+  })())
+
+  const biased = [
+    { id: 'g1', label: '一', tags: ['测试标签'], extension: 'gif' },
+    { id: 'g2', label: '二', tags: ['测试标签'], extension: 'gif' },
+    { id: 's1', label: '三', tags: ['测试标签'], extension: 'jpg' },
+    { id: 's2', label: '四', tags: ['测试标签'], extension: 'jpg' },
+  ]
+  let gifHits = 0
+  for (let i = 0; i < 2000; i += 1) {
+    if (library.pickSticker(biased, { tag: '测试标签', gifBias: 2 }).sticker.extension === 'gif') gifHits += 1
+  }
+  check('a GIF is drawn about twice as often as a still frame', gifHits > 1150 && gifHits < 1520, `gif=${gifHits}/2000`)
+  let flatHits = 0
+  for (let i = 0; i < 2000; i += 1) {
+    if (library.pickSticker(biased, { tag: '测试标签' }).sticker.extension === 'gif') flatHits += 1
+  }
+  check('without a bias the draw stays uniform', flatHits > 850 && flatHits < 1150, `gif=${flatHits}/2000`)
+
   // ---- the client half ------------------------------------------------------
   // It is a script, not a module: it calls `window.__ModuleLoader__.load(...)` at
   // load time and hands back CJS exports. Run it in a fresh VM context with a
